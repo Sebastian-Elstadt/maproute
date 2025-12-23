@@ -12,11 +12,41 @@ use std::{
     time::Duration,
 };
 
+#[derive(Debug)]
+struct WhoIsResult {
+    net_name: String,
+    desc: String,
+    country: String,
+    status: String,
+    source: String,
+    person: String,
+    address: String,
+    created: String,
+}
+
+impl WhoIsResult {
+    fn new_filled(str: &str) -> Self {
+        let str = str.to_string();
+
+        WhoIsResult {
+            net_name: str.clone(),
+            desc: str.clone(),
+            country: str.clone(),
+            status: str.clone(),
+            source: str.clone(),
+            person: str.clone(),
+            address: str.clone(),
+            created: str.clone(),
+        }
+    }
+}
+
 struct HopInfo {
     index: u8,
     ip_addr: std::net::IpAddr,
     dns_host: String,
     geo_addr: String,
+    whois: WhoIsResult,
 }
 
 #[derive(Parser, Debug)]
@@ -28,7 +58,8 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
-    let geodb = Arc::new(get_geodb().unwrap());
+    let geo_db = Arc::new(get_geo_db().unwrap());
+    let whois_db = Arc::new(get_whois_db().unwrap());
 
     println!("mapping internet route to '{}'...", args.target);
     let mut traceroute = Command::new("traceroute")
@@ -51,10 +82,11 @@ fn main() {
                 let index: u8 = parts["i"].parse().unwrap();
                 let ip_addr = parts["a"].to_string();
                 let multiprog = multiprog.clone();
-                let geodb = geodb.clone();
+                let geo_db = geo_db.clone();
+                let whois_db = whois_db.clone();
 
                 let handle = thread::spawn(move || {
-                    analyse_hop(index, &ip_addr, multiprog, geodb);
+                    analyse_hop(index, &ip_addr, multiprog, geo_db, whois_db);
                 });
 
                 thread_handles.push(handle);
@@ -69,21 +101,12 @@ fn main() {
     println!("program has completed.");
 }
 
-fn get_geodb() -> Result<maxminddb::Reader<Vec<u8>>, Box<dyn std::error::Error>> {
-    println!("checking local geo db...");
-
-    if Path::new("res/geo.mmdb").exists() {
-        return maxminddb::Reader::open_readfile("res/geo.mmdb").map_err(|e| e.into());
-    }
-
-    println!("missing local db. downloading...");
+fn download_resource_file(url: &str, file: &str) -> Result<(), Box<dyn std::error::Error>> {
     if !Path::new("res/").exists() {
         fs::create_dir("res")?;
     }
 
-    // got this from https://github.com/P3TERX/GeoLite.mmdb
-    // i assume this is ok
-    let response = ureq::get("https://git.io/GeoLite2-City.mmdb")
+    let response = ureq::get(url)
         .call()
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
@@ -91,30 +114,63 @@ fn get_geodb() -> Result<maxminddb::Reader<Vec<u8>>, Box<dyn std::error::Error>>
         return Err(format!("HTTP {}", response.status()).into());
     }
 
-    let dest = File::create("res/geo.mmdb").unwrap();
+    let dest = File::create(format!("res/{}", file)).unwrap();
     let mut dest_writer = BufWriter::new(dest);
     std::io::copy(&mut response.into_body().into_reader(), &mut dest_writer).unwrap();
+
+    Ok(())
+}
+
+fn get_geo_db() -> Result<maxminddb::Reader<Vec<u8>>, Box<dyn std::error::Error>> {
+    println!("checking geo db...");
+
+    if Path::new("res/geo.mmdb").exists() {
+        return maxminddb::Reader::open_readfile("res/geo.mmdb").map_err(|e| e.into());
+    }
+
+    println!("missing geo db. downloading...");
+    download_resource_file("https://git.io/GeoLite2-City.mmdb", "geo.mmdb")?;
     println!("geo db has been downloaded.");
 
-    let reader = maxminddb::Reader::open_readfile("/path/to/GeoLite2-City.mmdb")?;
-    return Ok(reader);
+    Ok(maxminddb::Reader::open_readfile(
+        "res/geo.mmdb",
+    )?)
+}
+
+fn get_whois_db() -> Result<whois_rust::WhoIs, Box<dyn std::error::Error>> {
+    println!("checking whois db...");
+
+    if Path::new("res/whois_servers.json").exists() {
+        return whois_rust::WhoIs::from_path("res/whois_servers.json").map_err(|e| e.into());
+    }
+
+    println!("missing whois db. downloading...");
+    download_resource_file(
+        "https://raw.githubusercontent.com/FurqanSoftware/node-whois/refs/heads/master/servers.json",
+        "whois_servers.json",
+    )?;
+    println!("whois db has been downloaded.");
+
+    whois_rust::WhoIs::from_path("res/whois_servers.json").map_err(|e| e.into())
 }
 
 fn analyse_hop(
     index: u8,
     ip_addr_str: &str,
     multiprog: Arc<MultiProgress>,
-    geodb: Arc<maxminddb::Reader<Vec<u8>>>,
+    geo_db: Arc<maxminddb::Reader<Vec<u8>>>,
+    whois_db: Arc<whois_rust::WhoIs>,
 ) {
     let mut hop = HopInfo {
         index,
         ip_addr: ip_addr_str.parse().unwrap(),
         dns_host: "...".to_string(),
         geo_addr: "...".to_string(),
+        whois: WhoIsResult::new_filled("..."),
     };
 
     let progbar = multiprog.add(ProgressBar::new(1));
-    progbar.set_style(ProgressStyle::with_template("{prefix}: {msg} {spinner}").unwrap());
+    progbar.set_style(ProgressStyle::with_template("{spinner}\n{prefix}: {msg}").unwrap());
     progbar.set_prefix(format!("{:>03}", index));
     update_hop_progress(&hop, &progbar, false);
     progbar.enable_steady_tick(Duration::from_millis(100));
@@ -124,7 +180,7 @@ fn analyse_hop(
     update_hop_progress(&hop, &progbar, false);
 
     // geo lookup
-    let geo_result = geodb.lookup(hop.ip_addr).unwrap();
+    let geo_result = geo_db.lookup(hop.ip_addr).unwrap();
     if let Ok(Some(city)) = geo_result.decode::<maxminddb::geoip2::City>() {
         hop.geo_addr = format!(
             "{}, {}",
@@ -136,20 +192,76 @@ fn analyse_hop(
     }
     update_hop_progress(&hop, &progbar, false);
 
+    // whois lookup
+    hop.whois = run_whois_lookup(ip_addr_str, whois_db).unwrap_or(WhoIsResult::new_filled("unknown"));
+
     // finalise
     update_hop_progress(&hop, &progbar, true);
 }
 
+fn run_whois_lookup(
+    ip_addr: &str,
+    whois_db: Arc<whois_rust::WhoIs>,
+) -> Result<WhoIsResult, Box<dyn std::error::Error>> {
+    let mut result = WhoIsResult::new_filled("unknown");
+
+    // netname, descr, country, status, source, person, address, created,
+    let whois_str = whois_db
+        .lookup(whois_rust::WhoIsLookupOptions::from_string(ip_addr)?)?;
+
+    let regex = Regex::new(r"netname:\s*(?<netname>.*)\s").unwrap();
+    if let Some(cap) = regex.captures(&whois_str) {
+        result.net_name = cap["netname"].to_string();
+    }
+
+    let regex = Regex::new(r"descr:\s*(?<desc>.*)\s").unwrap();
+    if let Some(cap) = regex.captures(&whois_str) {
+        result.desc = cap["desc"].to_string();
+    }
+
+    let regex = Regex::new(r"country:\s*(?<country>.*)\s").unwrap();
+    if let Some(cap) = regex.captures(&whois_str) {
+        result.country = cap["country"].to_string();
+    }
+
+    let regex = Regex::new(r"status:\s*(?<status>.*)\s").unwrap();
+    if let Some(cap) = regex.captures(&whois_str) {
+        result.status = cap["status"].to_string();
+    }
+
+    let regex = Regex::new(r"source:\s*(?<source>.*)\s").unwrap();
+    if let Some(cap) = regex.captures(&whois_str) {
+        result.source = cap["source"].to_string();
+    }
+
+    let regex = Regex::new(r"person:\s*(?<person>.*)\s").unwrap();
+    if let Some(cap) = regex.captures(&whois_str) {
+        result.person = cap["person"].to_string();
+    }
+
+    let regex = Regex::new(r"address:\s*(?<address>.*)\s").unwrap();
+    if let Some(cap) = regex.captures(&whois_str) {
+        result.address = cap["address"].to_string();
+    }
+
+    let regex = Regex::new(r"created:\s*(?<created>.*)\s").unwrap();
+    if let Some(cap) = regex.captures(&whois_str) {
+        result.created = cap["created"].to_string();
+    }
+
+    Ok(result)
+}
+
 fn update_hop_progress(hop: &HopInfo, progbar: &ProgressBar, finished: bool) {
     if finished {
-        progbar.set_message(format!(
-            "{}\nhost: {}\ngeo: {}\n",
-            hop.ip_addr, hop.dns_host, hop.geo_addr
+        progbar.finish_with_message(format!(
+            "{}\nhost: {}\ngeo: {}\nwhois: {:?}\n\n",
+            hop.ip_addr, hop.dns_host, hop.geo_addr, hop.whois
         ));
     } else {
-        progbar.finish_with_message(format!(
-            "{:<15} - analysing...\nhost: {}\ngeo: {}\n",
-            hop.ip_addr, hop.dns_host, hop.geo_addr
+        progbar.set_message(format!(
+            "{} - analysing...\nhost: {}\ngeo: {}\nwhois: {:?}\n",
+            hop.ip_addr, hop.dns_host, hop.geo_addr, hop.whois
         ));
     }
 }
