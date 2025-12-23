@@ -42,7 +42,6 @@ impl WhoIsResult {
 }
 
 struct HopInfo {
-    index: u8,
     ip_addr: std::net::IpAddr,
     dns_host: String,
     geo_addr: String,
@@ -162,7 +161,6 @@ fn analyse_hop(
     whois_db: Arc<whois_rust::WhoIs>,
 ) {
     let mut hop = HopInfo {
-        index,
         ip_addr: ip_addr_str.parse().unwrap(),
         dns_host: "...".to_string(),
         geo_addr: "...".to_string(),
