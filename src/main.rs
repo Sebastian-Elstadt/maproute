@@ -1,4 +1,5 @@
 use clap::Parser;
+use dns_lookup::lookup_addr;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use regex::Regex;
 use std::{
@@ -54,15 +55,19 @@ fn main() {
     }
 }
 
-fn analyse_hop(index: u8, ip_addr: &str, multiprog: Arc<MultiProgress>) {
+fn analyse_hop(index: u8, ip_addr_str: &str, multiprog: Arc<MultiProgress>) {
     let progbar = multiprog.add(ProgressBar::new(1));
-    progbar.set_style(ProgressStyle::with_template("{prefix:>3}: {msg} {spinner}").unwrap());
-    progbar.set_prefix(format!("{}", index));
-    progbar.set_message(format!("{:<15} - analysing...", ip_addr));
+    progbar.set_style(ProgressStyle::with_template("{prefix}: {msg} {spinner}").unwrap());
+    progbar.set_prefix(format!("{:>03}", index));
+    progbar.set_message(format!("{:<15} - analysing...", ip_addr_str));
     progbar.enable_steady_tick(Duration::from_millis(100));
 
-    // todo
+    // reverse DNS lookup
+    let ip_addr: std::net::IpAddr = ip_addr_str.parse().unwrap();
+    let host = lookup_addr(&ip_addr).unwrap_or("unknown".to_string());
+    progbar.set_message(format!("{:<15} - analysing...\nhost: {}\n", ip_addr_str, host));
+
     thread::sleep(Duration::from_secs(2));
 
-    progbar.finish_with_message(format!("{:<15} - someserver.net (earth)", ip_addr));
+    progbar.finish_with_message(format!("{}\nhost: {}\n", ip_addr_str, host));
 }
