@@ -131,9 +131,7 @@ fn get_geo_db() -> Result<maxminddb::Reader<Vec<u8>>, Box<dyn std::error::Error>
     download_resource_file("https://git.io/GeoLite2-City.mmdb", "geo.mmdb")?;
     println!("geo db has been downloaded.");
 
-    Ok(maxminddb::Reader::open_readfile(
-        "res/geo.mmdb",
-    )?)
+    Ok(maxminddb::Reader::open_readfile("res/geo.mmdb")?)
 }
 
 fn get_whois_db() -> Result<whois_rust::WhoIs, Box<dyn std::error::Error>> {
@@ -173,25 +171,32 @@ fn analyse_hop(
     update_hop_progress(&hop, &progbar, false);
     progbar.enable_steady_tick(Duration::from_millis(100));
 
-    // reverse DNS lookup
-    hop.dns_host = lookup_addr(&hop.ip_addr).unwrap_or("unknown".to_string());
-    update_hop_progress(&hop, &progbar, false);
-
-    // geo lookup
-    let geo_result = geo_db.lookup(hop.ip_addr).unwrap();
-    if let Ok(Some(city)) = geo_result.decode::<maxminddb::geoip2::City>() {
-        hop.geo_addr = format!(
-            "{}, {}",
-            city.city.names.english.unwrap_or("???"),
-            city.country.names.english.unwrap_or("???")
-        );
+    if ip_addr_str.starts_with("192.168") {
+        hop.dns_host = "n/a".to_string();
+        hop.geo_addr = "n/a".to_string();
+        hop.whois = WhoIsResult::new_filled("n/a");
     } else {
-        hop.geo_addr = "unknown".to_string();
-    }
-    update_hop_progress(&hop, &progbar, false);
+        // reverse DNS lookup
+        hop.dns_host = lookup_addr(&hop.ip_addr).unwrap_or("unknown".to_string());
+        update_hop_progress(&hop, &progbar, false);
 
-    // whois lookup
-    hop.whois = run_whois_lookup(ip_addr_str, whois_db).unwrap_or(WhoIsResult::new_filled("unknown"));
+        // geo lookup
+        let geo_result = geo_db.lookup(hop.ip_addr).unwrap();
+        if let Ok(Some(city)) = geo_result.decode::<maxminddb::geoip2::City>() {
+            hop.geo_addr = format!(
+                "{}, {}",
+                city.city.names.english.unwrap_or("???"),
+                city.country.names.english.unwrap_or("???")
+            );
+        } else {
+            hop.geo_addr = "unknown".to_string();
+        }
+        update_hop_progress(&hop, &progbar, false);
+
+        // whois lookup
+        hop.whois =
+            run_whois_lookup(ip_addr_str, whois_db).unwrap_or(WhoIsResult::new_filled("unknown"));
+    }
 
     // finalise
     update_hop_progress(&hop, &progbar, true);
@@ -204,8 +209,7 @@ fn run_whois_lookup(
     let mut result = WhoIsResult::new_filled("unknown");
 
     // netname, descr, country, status, source, person, address, created,
-    let whois_str = whois_db
-        .lookup(whois_rust::WhoIsLookupOptions::from_string(ip_addr)?)?;
+    let whois_str = whois_db.lookup(whois_rust::WhoIsLookupOptions::from_string(ip_addr)?)?;
 
     let regex = Regex::new(r"netname:\s*(?<netname>.*)\s").unwrap();
     if let Some(cap) = regex.captures(&whois_str) {
@@ -253,12 +257,12 @@ fn run_whois_lookup(
 fn update_hop_progress(hop: &HopInfo, progbar: &ProgressBar, finished: bool) {
     if finished {
         progbar.finish_with_message(format!(
-            "{}\nhost: {}\ngeo: {}\nwhois: {:?}\n\n",
+            "{}\nhost: {}\ngeo: {}\n{:?}\n\n",
             hop.ip_addr, hop.dns_host, hop.geo_addr, hop.whois
         ));
     } else {
         progbar.set_message(format!(
-            "{} - analysing...\nhost: {}\ngeo: {}\nwhois: {:?}\n",
+            "{} - analysing...\nhost: {}\ngeo: {}\n{:?}\n",
             hop.ip_addr, hop.dns_host, hop.geo_addr, hop.whois
         ));
     }
